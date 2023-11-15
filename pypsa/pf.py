@@ -319,7 +319,6 @@ def newton_raphson_sparse(
 
         if quantum_solver is None:
             update =  spsolve(dfdx(guess, **slack_args), F)
-            print(update)
         elif quantum_solver == 'qubo':
             mat = csr_matrix(dfdx(guess, **slack_args)).todense()
             b = np.array(F)
@@ -337,7 +336,6 @@ def newton_raphson_sparse(
 
         F = f(guess, **slack_args)
         diff = norm(F, np.Inf)
-        print(diff, x_tol)
         logger.debug("Error at iteration %d: %f", n_iter, diff)
 
     if diff > x_tol:
