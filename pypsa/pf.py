@@ -30,6 +30,9 @@ from scipy.sparse import issparse
 from scipy.sparse import vstack as svstack
 from scipy.sparse.linalg import spsolve
 
+from qalcore.dwave.qubols.qubols import QUBOLS 
+from qalcore.qiskit.vqls import VQLS
+
 from pypsa.descriptors import (
     Dict,
     additional_linkports,
@@ -134,6 +137,8 @@ def _network_prepare_and_run_pf(
     linear=False,
     distribute_slack=False,
     slack_weights="p_set",
+    quantum_solver=None,
+    quantum_solver_options={},
     **kwargs,
 ):
     if linear:
@@ -212,6 +217,8 @@ def _network_prepare_and_run_pf(
                 skip_pre=True,
                 distribute_slack=distribute_slack,
                 slack_weights=sn_slack_weights,
+                quantum_solver=quantum_solver,
+                quantum_solver_options=quantum_solver_options,
                 **kwargs,
             )
     if not linear:
@@ -226,6 +233,8 @@ def network_pf(
     use_seed=False,
     distribute_slack=False,
     slack_weights="p_set",
+    quantum_solver=None,
+    quantum_solver_options={}
 ):
     """
     Full non-linear power flow for generic network.
@@ -274,6 +283,8 @@ def network_pf(
         use_seed=use_seed,
         distribute_slack=distribute_slack,
         slack_weights=slack_weights,
+        quantum_solver=quantum_solver,
+        quantum_solver_options=quantum_solver_options
     )
 
 
@@ -285,6 +296,8 @@ def newton_raphson_sparse(
     lim_iter=100,
     distribute_slack=False,
     slack_weights=None,
+    quantum_solver=None,
+    quantum_solver_options={}
 ):
     """
     Solve f(x) = 0 with initial guess for x and dfdx(x).
@@ -304,11 +317,27 @@ def newton_raphson_sparse(
     while diff > x_tol and n_iter < lim_iter:
         n_iter += 1
 
-        guess = guess - spsolve(dfdx(guess, **slack_args), F)
+        if quantum_solver is None:
+            update =  spsolve(dfdx(guess, **slack_args), F)
+            print(update)
+        elif quantum_solver == 'qubo':
+            mat = csr_matrix(dfdx(guess, **slack_args)).todense()
+            b = np.array(F)
+            norm_b = np.linalg.norm(b)
+            b /= norm_b
+            update = QUBOLS(quantum_solver_options).solve(mat, b)
+            update *= norm_b
+        elif quantum_solver == 'vqls':
+            update = VQLS(**quantum_solver_options).solve(dfdx(guess, **slack_args), F)
+        else:
+            raise ValueError('Quantum solver not recognized')
+            
+
+        guess = guess - update
 
         F = f(guess, **slack_args)
         diff = norm(F, np.Inf)
-
+        print(diff, x_tol)
         logger.debug("Error at iteration %d: %f", n_iter, diff)
 
     if diff > x_tol:
@@ -435,6 +464,8 @@ def sub_network_pf(
     use_seed=False,
     distribute_slack=False,
     slack_weights="p_set",
+    quantum_solver=None,
+    quantum_solver_options={}
 ):
     """
     Non-linear power flow for connected sub-network.
@@ -692,6 +723,10 @@ def sub_network_pf(
                 slack_args["slack_weights"] = slack_weights_calc.loc[now]
             else:
                 slack_args["slack_weights"] = slack_weights_calc
+
+        # integrate quantum solvers
+        slack_args['quantum_solver'] = quantum_solver
+        slack_args['quantum_solver_options'] = quantum_solver_options
 
         # Now try and solve
         start = time.time()
