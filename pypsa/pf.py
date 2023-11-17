@@ -288,6 +288,101 @@ def network_pf(
     )
 
 
+def qubosolve(Agraph, blist, quantum_solver_options):
+    """Solve the linear system using QUBO
+
+    Args:
+        Agraph (tuple): graph representing the A matrix
+        blist (List): b vector
+        quantum_solver_options (dict): optins for the solver
+    """
+
+    # create a dense matrix from the graph
+    mat = csr_matrix(Agraph).todense()
+
+    # preprocess the b vector
+    b = np.array(blist)
+    norm_b = np.linalg.norm(b)
+    b /= norm_b
+
+    # solve
+    update = QUBOLS(quantum_solver_options).solve(mat, b)
+
+    # postporcess solution 
+    update *= norm_b
+
+    return update
+
+def vqlssolve(Agraph, blist, quantum_solver_options):
+    """Solve the linear system using QUBO
+
+    Args:
+        Agraph (tuple): graph representing the A matrix
+        blist (List): b vector
+        quantum_solver_options (dict): optins for the solver
+    """
+
+
+    def post_process_vqls_solution(A, y, x):
+        """Retreive the  norm and direction of the solution vector
+           VQLS provides a normalized form of the solution vector
+           that can also have a -1 prefactor. This routine retrieves
+           the un-normalized solution vector with the correct prefactor
+
+        Args:
+            A (np.ndarray): matrix of the linear system
+            y (np.ndarray): rhs of the linear system
+            x (np.ndarray): proposed solution
+        """
+
+        Ax = A @ x
+        normy = np.linalg.norm(y)
+        normAx = np.linalg.norm(Ax)
+        prefac = normy / normAx
+
+        if np.dot(Ax * prefac, y) < 0:
+            prefac *= -1
+        sol = prefac * x 
+        return sol
+
+    # create a sparse matrix from the graph
+    mat = csr_matrix(Agraph)
+
+    # preprocess the b vector
+    b = np.array(blist)
+    norm_b = np.linalg.norm(b)
+    b /= norm_b
+
+    # extract required options for the vqls solver
+    estimator = quantum_solver_options.pop('estimator')
+    ansatz = quantum_solver_options.pop('ansatz')
+    optimizer = quantum_solver_options.pop('optimizer')
+
+    # extract optional options for the vqls solver
+    sampler = quantum_solver_options.pop('sampler') if 'sampler' in quantum_solver_options else None
+    initial_point = quantum_solver_options.pop('initial_point') if 'initial_point' in quantum_solver_options else None
+    gradient = quantum_solver_options.pop('gradient') if 'gradient' in quantum_solver_options else None
+    max_evals_grouped = quantum_solver_options.pop('max_evals_grouped') if 'max_evals_grouped' in quantum_solver_options else None
+
+    # solver
+    vqls = VQLS(
+        estimator,
+        ansatz,
+        optimizer,
+        sampler=sampler,
+        initial_point=initial_point,
+        gradient=gradient,
+        max_evals_grouped=max_evals_grouped,
+        options=quantum_solver_options
+    )
+
+    # solver
+    res = vqls.solve(mat, b)
+
+    # extract the results
+    return post_process_vqls_solution(mat, b, res.vector)
+    
+
 def newton_raphson_sparse(
     f,
     guess,
@@ -319,15 +414,12 @@ def newton_raphson_sparse(
 
         if quantum_solver is None:
             update =  spsolve(dfdx(guess, **slack_args), F)
+
         elif quantum_solver == 'qubo':
-            mat = csr_matrix(dfdx(guess, **slack_args)).todense()
-            b = np.array(F)
-            norm_b = np.linalg.norm(b)
-            b /= norm_b
-            update = QUBOLS(quantum_solver_options).solve(mat, b)
-            update *= norm_b
+            update = qubosolve(dfdx(guess, **slack_args), F, quantum_solver_options)
+
         elif quantum_solver == 'vqls':
-            update = VQLS(**quantum_solver_options).solve(dfdx(guess, **slack_args), F)
+            update = vqlssolve(dfdx(guess, **slack_args), F, quantum_solver_options)
         else:
             raise ValueError('Quantum solver not recognized')
             
@@ -570,6 +662,9 @@ def sub_network_pf(
         v_ang = network.buses_t.v_ang.loc[now, buses_o]
         V = v_mag_pu * np.exp(1j * v_ang)
 
+        print('=========================')
+        print(csr_matrix(sub_network.Y).todense().real)
+        print(V)
         if distribute_slack:
             slack_power = slack_weights * guess[-1]
             mismatch = V * np.conj(sub_network.Y * V) - s + slack_power
