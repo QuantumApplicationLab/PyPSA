@@ -288,8 +288,13 @@ def network_pf(
     )
 
 
-def qubosolve(Agraph, blist, quantum_solver_options):
+def qubosolve_complex(Agraph, blist, quantum_solver_options):
     """Solve the linear system using QUBO
+
+    to deal with the complex matrix we solve
+
+    Ar -Ac    xr      br
+    Ac  Ar    xc   =  bc
 
     Args:
         Agraph (tuple): graph representing the A matrix
@@ -298,7 +303,40 @@ def qubosolve(Agraph, blist, quantum_solver_options):
     """
 
     # create a dense matrix from the graph
-    mat = csr_matrix(Agraph).todense()
+    mat = csr_matrix(Agraph)#.todense()
+    size = mat.shape[0]
+
+    # create the real/imag 
+    A = np.block([[mat.real, -mat.imag],[mat.imag, mat.real]])
+
+    # preprocess the b vector
+    b = np.array(blist)
+    b = np.block([b.real, b.imag])
+    norm_b = np.linalg.norm(b)
+    b /= norm_b
+
+    # solve
+    update = QUBOLS(quantum_solver_options).solve(A, b)
+
+    # postporcess solution 
+    update *= norm_b
+
+    return update[:size] + 1.0j*update[size:]
+
+def qubosolve_real(Agraph, blist, quantum_solver_options):
+    """Solve the linear system using QUBO
+
+    to deal with the complex matrix we solve
+
+
+    Args:
+        Agraph (tuple): graph representing the A matrix
+        blist (List): b vector
+        quantum_solver_options (dict): optins for the solver
+    """
+
+    # create a dense matrix from the graph
+    mat = csr_matrix(Agraph) #.todense()
 
     # preprocess the b vector
     b = np.array(blist)
@@ -312,6 +350,7 @@ def qubosolve(Agraph, blist, quantum_solver_options):
     update *= norm_b
 
     return update
+
 
 def vqlssolve(Agraph, blist, quantum_solver_options):
     """Solve the linear system using QUBO
@@ -405,6 +444,7 @@ def newton_raphson_sparse(
     converged = False
     n_iter = 0
     F = f(guess, **slack_args)
+    iscomplex = False
     diff = norm(F, np.Inf)
 
     logger.debug("Error at iteration %d: %f", n_iter, diff)
@@ -416,13 +456,21 @@ def newton_raphson_sparse(
             update =  spsolve(dfdx(guess, **slack_args), F)
 
         elif quantum_solver == 'qubo':
-            update = qubosolve(dfdx(guess, **slack_args), F, quantum_solver_options)
+            if iscomplex:
+                update = qubosolve_complex(dfdx(guess, **slack_args), F, quantum_solver_options)
+            else:
+                update = qubosolve_real(dfdx(guess, **slack_args), F, quantum_solver_options)
 
         elif quantum_solver == 'vqls':
             update = vqlssolve(dfdx(guess, **slack_args), F, quantum_solver_options)
         else:
             raise ValueError('Quantum solver not recognized')
-            
+
+
+        print(dfdx(guess, **slack_args))
+        print(F)
+        print(update)
+
 
         guess = guess - update
 
@@ -662,14 +710,17 @@ def sub_network_pf(
         v_ang = network.buses_t.v_ang.loc[now, buses_o]
         V = v_mag_pu * np.exp(1j * v_ang)
 
-        print('=========================')
-        print(csr_matrix(sub_network.Y).todense().real)
-        print(V)
+        # print('=========================')
+        # print(csr_matrix(sub_network.Y).todense().imag)
+        # print(V)
+        # print(np.conj(sub_network.Y * V))
+        # print(V * np.conj(sub_network.Y * V))
         if distribute_slack:
             slack_power = slack_weights * guess[-1]
             mismatch = V * np.conj(sub_network.Y * V) - s + slack_power
         else:
             mismatch = V * np.conj(sub_network.Y * V) - s
+        # print(mismatch)
 
         if distribute_slack:
             F = r_[real(mismatch)[:], imag(mismatch)[1 + len(sub_network.pvs) :]]
